@@ -2,7 +2,9 @@ from setuptools import setup
 
 import pathlib
 
-description = 'A convenient tool to generate medical images into different directional slice.'
+description = (
+    'A convenient tool to generate medical images into different directional slice.'
+)
 
 try:
     here = pathlib.Path(__file__).parent.resolve()
@@ -27,5 +29,5 @@ setup(
     packages=['medical_volume_slicer'],
     python_requires='>=3.6, <4',
     install_requires=['medpy'],
-    zip_safe=False
+    zip_safe=False,
 )
