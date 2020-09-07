@@ -6,8 +6,6 @@ from skimage.transform import resize
 import numpy as np
 from typing import Union
 
-test_mat = [[-0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]
-
 
 class Translator:
     normal_direction = ['LR', 'AP', 'SI']
@@ -58,30 +56,52 @@ class Translator:
             for i, r in direction
         )
 
-
-direction_chinese = Translator.direction_chinese
-direction_chinese_to_symbol = Translator.direction_chinese_to_symbol
+    @staticmethod
+    def reverse_t(transpose: tuple = (0, 1, 2)) -> tuple:
+        return tuple(transpose.index(i) for i in range(len(transpose)))
 
 
 class Volume:
+    data: np.ndarray
+    header: io.Header
+
     def __init__(self, datapath=None, logger=print):
         self.log = logger
         if datapath:
             self.parse_data(datapath)
 
-    def from_d(self):
-        self.direction
+        def save(path: str, force: bool = True, use_compression: bool = False):
+            io.save(
+                self.data,
+                path,
+                self.header,
+                force=force,
+                use_compression=use_compression,
+            )
 
-    def parse_data(self, args):
+        self.save = save
+
+    def load_data(
+        self,
+        arr: np.ndarray,
+        direction: str = 'axial',
+        spacing: tuple = (1.0, 1.0, 1.0),
+    ) -> None:
+        m = self.from_direction(direction=direction, reverse=True)
+        arr = arr.transpose(m)
+        self.data = arr
+        self.header.set_voxel_spacing(spacing)
+
+    def parse_data(self, path: str, header_only: bool = False):
         log = self.log
-        if isinstance(args, str) and os.path.exists(args):
+        if isinstance(path, str) and os.path.exists(path):
             try:
-                self.data, self.header = io.load(args)
-                self.datapath = args
+                self.data, self.header = io.load(path)
+                self.datapath = path
                 log(f"Data Loaded: Shape{self.data.shape}")
-                log(f"path: {args}")
+                log(f"path: {path}")
             except ImageLoadingError:
-                log(f"Data: {args} can't be load!")
+                log(f"Data: {path} can't be load!")
                 raise ImageLoadingError
             except:
                 raise
@@ -114,11 +134,29 @@ class Volume:
                     row = row[::-1]
                 print(f"由{dc[row[0]][0]}至{dc[row[1]][0]}")
 
+    def from_direction(self, direction: str = 'axial', reverse: bool = False) -> tuple:
+        d = self.direction
+        mapping = {
+            'axial': (d[2], d[1], d[0]),
+            'sagittal': (d[0], d[2], d[1]),
+            'coronal': (d[1], d[2], d[0]),
+        }
+        try:
+            m = mapping[direction]
+        except KeyError:
+            raise ValueError(
+                f"Incorrect direction: {direction}. Expect in {{'axial', 'sagittal', 'coronal'}}"
+            )
+        return m if not reverse else Translator.reverse_t(m)
+
     def get_yield_slice(
-        self, direction: str = 'axial', pad_value: Union[int, float] = -1024.0
+        self,
+        direction: str = 'axial',
+        pad_value: Union[int, float] = -1024.0,
+        generator: bool = False,
     ):
         """
-        Yielding slice from this volume with different direction.
+        Return iterable numpy volume from this volume with different direction.
 
         The volume aspect ratio will be corrected by the voxel space info.
         If the shape after resizing correction is not 512, yield a slice with padding, or cropping to 512 x 512.
@@ -133,38 +171,21 @@ class Volume:
         Yields:
             np.ndarray: A numpy array with shape(512, 512).
         """
-        d = self.direction
-        mapping = {
-            'axial': (d[2], d[1], d[0]),
-            'sagittal': (d[0], d[2], d[1]),
-            'coronal': (d[1], d[2], d[0]),
-        }
-        try:
-            m = mapping[direction]
-        except KeyError:
-            raise ValueError(
-                f"Incorrect direction: {direction}. Expect in {{'axial', 'sagittal', 'coronal'}}"
-            )
+        # Direction mapping.
+        m = self.from_direction(direction)
 
         if self.data.shape[m[1]] == self.data.shape[m[2]] == 512:
             # Check if data is axial direction already
             vol = self.data.transpose(m)
-            pad_data = False
         else:
             i_space = self.space[m[1]]
             j_space = self.space[m[2]]
-            ratio = j_space / i_space
+            ratio = j_space / i_space  # Voxel Aspect ration
             scale_axis_shape = int(self.data.shape[m[1]] // ratio)
             pad_w = (
                 (512 - scale_axis_shape) // 2,
                 (512 - scale_axis_shape) // 2 + scale_axis_shape % 2,
             )
-
-            if min(pad_w) < 0:
-                use_crop = True
-                # raise ValueError(f"Padding Overflow:\nPad Width: {pad_w}, from {self.datapath}, {self.header.get_info_consistent(3)}")
-            else:
-                use_crop = False
 
             vol = resize(
                 self.data.transpose(m),
@@ -174,19 +195,28 @@ class Volume:
                 cval=pad_value,
                 preserve_range=True,
             )
-            pad_data = True
 
-        if pad_data:
-            if use_crop:
-                for im in vol:
-                    yield im[-pad_w[1] : pad_w[0], :]
+            if min(pad_w) < 0:
+                vol = vol[:, -pad_w[1] : pad_w[0], :]
+                # raise ValueError(f"Padding Overflow:\nPad Width: {pad_w}, from {self.datapath}, {self.header.get_info_consistent(3)}")
             else:
-                for im in vol:
-                    # im = np.pad(im, (pad_w, (0,0)), constant_values = pad_value)
-                    yield np.pad(im, (pad_w, (0, 0)), constant_values=pad_value)
+                vol = np.pad(vol, ((0, 0), pad_w, (0, 0)), constant_values=pad_value)
+                assert vol.shape[1] == vol.shape[2] == 512, "Shape mismatch 512 x 512."
+
+        if generator:
+            def y():
+                yield from vol
+            return y()
         else:
-            yield from vol
+            return vol
 
 
 if __name__ == '__main__':
+    # fmt: off
+    test_mat = [
+        [-0.0, 0.0, 1.0],
+        [ 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0]
+    ]
+    # fmt: on
     print(Translator.from_direction_matrix(test_mat))
