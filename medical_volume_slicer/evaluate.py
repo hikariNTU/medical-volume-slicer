@@ -91,10 +91,13 @@ def preserve_biggest_chunks(
 ) -> np.ndarray:
     # combine liver and tumor
     dilation_vol = ndimage.binary_dilation(
-        vol, structure=kernel_shuttle, iterations=1  # Not sure
+        vol,
+        structure=kernel_shuttle,
+        iterations=1  # Not sure
     ).astype(int)
 
     dilation_vol = measure.label(dilation_vol)
+    dilation_vol *= vol  # restore?
 
     regions = measure.regionprops(dilation_vol)
     regions.sort(key=lambda x: x.area, reverse=True)
@@ -106,7 +109,7 @@ def preserve_biggest_chunks(
             log(
                 f"{'Holes:':12} {spacing_to_cc(spacing) * (region.filled_area - region.area):<10.5f} cm3"
             )
-            log(f"{'Solidity:':12} {region.solidity * 100:<5.2f}%")
+            # log(f"{'Solidity:':12} {region.solidity * 100:<5.2f}%")
             log(f"{'Centroid:':12} ({', '.join(f'{c:<.5}' for c in region.centroid)})")
         log(f"{'':=^38}")
 
@@ -120,6 +123,7 @@ def preserve_biggest_chunks(
     if fill_hole:
         preserved_vol = ndimage.binary_fill_holes(preserved_vol).astype(int)
     return preserved_vol
+
 
 __all__ = [slice_diff, slice_area_change, preserve_biggest_chunks, spacing_to_cc]
 
