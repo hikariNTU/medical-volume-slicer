@@ -127,12 +127,12 @@ class Volume:
         nd = Translator.normal_direction
         dc = Translator.direction_chinese
         if not chinese:
-            print(tuple(map(lambda x: nd[x], self.direction)))
+            self.log(tuple(map(lambda x: nd[x], self.direction)))
         else:
             for i, row in enumerate(map(lambda x: nd[x], self.direction)):
                 if self.reverse[i]:
                     row = row[::-1]
-                print(f"由{dc[row[0]][0]}至{dc[row[1]][0]}")
+                self.log(f"由{dc[row[0]][0]}至{dc[row[1]][0]}")
 
     def from_direction(self, direction: str = 'axial', reverse: bool = False) -> tuple:
         d = self.direction
