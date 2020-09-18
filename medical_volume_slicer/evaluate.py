@@ -133,16 +133,31 @@ def evaluate_pred_quality(
     chunks: int = 2,  # num of preserved label
     merge_tumor: bool = True,
     dilation_structure=None,
+    calc_holes: bool = False,
 ):
+    """
+    Calculate quality of a prediction label map.
+
+    Args:
+        path (str, optional): path to prediction file. If not provide, vol and hdr must be provide manually. Defaults to None.
+        vol (np.ndarray, optional): volume of prediction. Defaults to None.
+        hdr ([type], optional): header of medpy header. Defaults to None.
+        chunks (int, optional): Max number of biggest chunk to calculate. Defaults to 2.
+        dilation_structure (array_like, optional): Structure used for dilation process. Defaults to None.
+
+    Returns:
+        List of Dict: List of Dictionary data include information chunk.
+    """
+
     if isinstance(path, str):
         vol, hdr = medpy_load(path)
     assert vol and hdr, "File not load correctly? Volume or Header is NoneType"
     if merge_tumor:
         vol[vol == 2] = 1  # merge tumor
+
     l_vol = ndimage.binary_dilation(
         vol, structure=dilation_structure, iterations=1  # Not sure
     ).astype(int)
-
     l_vol = measure.label(l_vol)
     l_vol *= vol  # restore?
 
@@ -162,7 +177,8 @@ def evaluate_pred_quality(
         chunk["slices"] = len(r.image)
         chunk["spacing"] = hdr.spacing
         chunk["volume"] = r.area * spacing_to_cc(hdr.spacing)
-        chunk["holes"] = (r.filled_area - r.area) * spacing_to_cc(hdr.spacing)
+        if calc_holes:
+            chunk["holes"] = (r.filled_area - r.area) * spacing_to_cc(hdr.spacing)
         chunk["centroid"] = f"({', '.join(f'{c:<.5}' for c in r.centroid)})"
         d_list = slice_area_change(r.image)
         params, params_covariance = (
