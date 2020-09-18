@@ -151,7 +151,7 @@ def evaluate_pred_quality(
 
     if isinstance(path, str):
         vol, hdr = medpy_load(path)
-    assert vol and hdr, "File not load correctly? Volume or Header is NoneType"
+    assert vol is not None and hdr, "File not load correctly? Volume or Header is NoneType"
     if merge_tumor:
         vol[vol == 2] = 1  # merge tumor
 
@@ -173,7 +173,7 @@ def evaluate_pred_quality(
             continue
         r = regions[i]
         chunk = {}
-        chunk["id"] = f"{os.path.basename(path).split('.')[0]:05}_{i}"
+        chunk["id"] = f"{os.path.basename(path).split('.')[0]}_{i}"
         chunk["slices"] = len(r.image)
         chunk["spacing"] = hdr.spacing
         chunk["volume"] = r.area * spacing_to_cc(hdr.spacing)
