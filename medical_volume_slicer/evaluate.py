@@ -1,7 +1,10 @@
 from typing import Union, Callable, List, Iterable
 import numpy as np
-from scipy import ndimage
+from scipy import ndimage, optimize
 from skimage import measure
+
+from medpy.io import load as medpy_load
+import os
 
 
 def slice_diff(vol: Union[np.ndarray, str]) -> List[int]:
@@ -91,9 +94,7 @@ def preserve_biggest_chunks(
 ) -> np.ndarray:
     # combine liver and tumor
     dilation_vol = ndimage.binary_dilation(
-        vol,
-        structure=kernel_shuttle,
-        iterations=1  # Not sure
+        vol, structure=kernel_shuttle, iterations=1  # Not sure
     ).astype(int)
 
     dilation_vol = measure.label(dilation_vol)
@@ -123,6 +124,62 @@ def preserve_biggest_chunks(
     if fill_hole:
         preserved_vol = ndimage.binary_fill_holes(preserved_vol).astype(int)
     return preserved_vol
+
+
+def evaluate_pred_quality(
+    path: str = None,
+    vol: np.ndarray = None,
+    hdr=None,
+    chunks: int = 2,  # num of preserved label
+    merge_tumor: bool = True,
+    dilation_structure=None,
+):
+    if isinstance(path, str):
+        vol, hdr = medpy_load(path)
+    assert vol and hdr, "File not load correctly? Volume or Header is NoneType"
+    if merge_tumor:
+        vol[vol == 2] = 1  # merge tumor
+    l_vol = ndimage.binary_dilation(
+        vol, structure=dilation_structure, iterations=1  # Not sure
+    ).astype(int)
+
+    l_vol = measure.label(l_vol)
+    l_vol *= vol  # restore?
+
+    regions = measure.regionprops(l_vol)
+    regions.sort(key=lambda x: x.area, reverse=True)
+
+    def test_func(x, a, b):  # linear regression
+        return a + b * x
+
+    data = []
+    for i in range(2):
+        if i >= len(regions):
+            continue
+        r = regions[i]
+        chunk = {}
+        chunk["id"] = f"{os.path.basename(path).split('.')[0]:05}_{i}"
+        chunk["slices"] = len(r.image)
+        chunk["spacing"] = hdr.spacing
+        chunk["volume"] = r.area * spacing_to_cc(hdr.spacing)
+        chunk["holes"] = (r.filled_area - r.area) * spacing_to_cc(hdr.spacing)
+        chunk["centroid"] = f"({', '.join(f'{c:<.5}' for c in r.centroid)})"
+        d_list = slice_area_change(r.image)
+        params, params_covariance = (
+            optimize.curve_fit(
+                test_func, range(1, len(d_list) + 1), d_list, p0=[200, -3]
+            )
+            if len(d_list) > 2
+            else ((0, 0), [(0, 0), (0, 0)])
+        )
+        chunk["a"] = params[0]
+        chunk["b"] = params[1]
+        a_err, b_err = np.sqrt(np.diag(params_covariance))
+        chunk["a_err"] = a_err
+        chunk["b_err"] = b_err
+        chunk["pseudo_error"] = chunk["a_err"] / chunk["a"] * 100.0
+        data.append(chunk)
+    return data
 
 
 __all__ = [slice_diff, slice_area_change, preserve_biggest_chunks, spacing_to_cc]
