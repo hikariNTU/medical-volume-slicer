@@ -132,8 +132,9 @@ def evaluate_pred_quality(
     hdr=None,
     chunks: int = 2,  # num of preserved label
     merge_tumor: bool = True,
-    dilation_structure=None,
+    dilation_structure: np.ndarray = None,
     calc_holes: bool = False,
+    note: str = None,
 ):
     """
     Calculate quality of a prediction label map.
@@ -141,17 +142,35 @@ def evaluate_pred_quality(
     Args:
         path (str, optional): path to prediction file. If not provide, vol and hdr must be provide manually. Defaults to None.
         vol (np.ndarray, optional): volume of prediction. Defaults to None.
-        hdr ([type], optional): header of medpy header. Defaults to None.
+        hdr ([type], optional): Medpy Header, or an object which return `obj.spacing` in tuple[float, float, float]. Defaults to None. 
         chunks (int, optional): Max number of biggest chunk to calculate. Defaults to 2.
         dilation_structure (array_like, optional): Structure used for dilation process. Defaults to None.
+        note (str, optional): Note add to each chunk. Defaults to None.
 
     Returns:
-        List of Dict: List of Dictionary data include information chunk.
-    """
+        List of Dict: List of Dictionary data include information chunks. Sorted by area from bigger to smaller. Chunks slices number below 2 will not be consider a valid chunk and will return a (0, 0, 999.99) linear regression result.
 
+    Chunk Dictionary:
+        id (str): File basename with labeled number of chunks, eg `pred_00018_2`
+        slices (int): Slices number included in this chunk
+        spacing (Tuple[float]): The space of a voxel in mm.
+        volume (float): The volume in this chunk, realted to spacing.
+        holes (float, optional): The holes volume inside this chunk, computation extensive.
+        centroid (Tuple[float]): The centroid of chunk.
+        a (float): Intercept of linear regression.
+        b (float): Gradient of linear regression.
+        a_err (float): Error of Intercept of linear regression.
+        b_err (float): Error of Gradient of linear regression.
+        pseudo_error (float): `a / a_err` or `999.99`. An simple calculation of volume error.
+        note (str, optional): note provided by input argument. Might not exist.
+
+    """
+    log = print
     if isinstance(path, str):
         vol, hdr = medpy_load(path)
-    assert vol is not None and hdr, "File not load correctly? Volume or Header is NoneType"
+    assert (
+        vol is not None and hdr
+    ), "File not load correctly? Volume or Header is NoneType"
     if merge_tumor:
         vol[vol == 2] = 1  # merge tumor
 
@@ -175,28 +194,47 @@ def evaluate_pred_quality(
         chunk = {}
         chunk["id"] = f"{os.path.basename(path).split('.')[0]}_{i}"
         chunk["slices"] = len(r.image)
-        chunk["spacing"] = hdr.spacing
-        chunk["volume"] = r.area * spacing_to_cc(hdr.spacing)
+        spacing = getattr(
+            hdr, 'spacing', None
+        )  # ignore spacing if None of the hdr is provide
+        if spacing == None:
+            log(
+                "Cannot find spacing information from Volume Header.",
+                "Using Unit Voxel",
+            )
+            spacing = (1.0, 1.0, 1.0)
+        chunk["spacing"] = spacing
+        chunk["volume"] = r.area * spacing_to_cc(spacing)
         if calc_holes:
-            chunk["holes"] = (r.filled_area - r.area) * spacing_to_cc(hdr.spacing)
+            chunk["holes"] = (r.filled_area - r.area) * spacing_to_cc(spacing)
         chunk["centroid"] = f"({', '.join(f'{c:<.5}' for c in r.centroid)})"
         d_list = slice_area_change(r.image)
-        params, params_covariance = (
+        params, params_covariance = (  # Calculate linear regression
             optimize.curve_fit(
                 test_func, range(1, len(d_list) + 1), d_list, p0=[200, -3]
             )
             if len(d_list) > 2
             else ((0, 0), [(0, 0), (0, 0)])
         )
-        chunk["a"] = params[0]
-        chunk["b"] = params[1]
+        chunk["a"] = params[0]  # intercept
+        chunk["b"] = params[1]  # gradient
         a_err, b_err = np.sqrt(np.diag(params_covariance))
         chunk["a_err"] = a_err
         chunk["b_err"] = b_err
-        chunk["pseudo_error"] = chunk["a_err"] / chunk["a"] * 100.0
+        chunk["pseudo_error"] = (
+            (chunk["a_err"] / chunk["a"] * 100.0) if chunk['a'] > 1.0 else 999.99
+        )  # Protect for zero-like division error
+        if note:
+            chunk["note"] = note
         data.append(chunk)
     return data
 
 
-__all__ = [slice_diff, slice_area_change, preserve_biggest_chunks, spacing_to_cc]
+__all__ = [
+    slice_diff,
+    slice_area_change,
+    preserve_biggest_chunks,
+    spacing_to_cc,
+    evaluate_pred_quality,
+]
 
