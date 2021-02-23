@@ -1,4 +1,4 @@
-from typing import Union, Callable, List, Iterable
+from typing import Union, Callable, List, Iterable, Any
 import numpy as np
 from scipy import ndimage, optimize
 from skimage import measure
@@ -85,16 +85,13 @@ kernel_shuttle = [
 ]
 
 
-def preserve_biggest_chunks(
-    vol: np.ndarray,  # Binary map for input data
-    chunk_num: int = 1,  # Number of preserved chunks
-    fill_hole: bool = False,  # Fill holes in output
-    log: Callable = None,  # Logger function, should be callable
-    spacing: List[int] = (1.0, 1.0, 1.0),  # Spacing for space calculation
-) -> np.ndarray:
-    # combine liver and tumor
+def label_regions(
+    vol: np.ndarray,
+    dilation_structure: np.ndarray = kernel_shuttle,
+    iteration: int = 1,
+) -> list:
     dilation_vol = ndimage.binary_dilation(
-        vol, structure=kernel_shuttle, iterations=1  # Not sure
+        vol, structure=dilation_structure, iterations=1  # Not sure
     ).astype(int)
 
     dilation_vol = measure.label(dilation_vol)
@@ -102,8 +99,35 @@ def preserve_biggest_chunks(
 
     regions = measure.regionprops(dilation_vol)
     regions.sort(key=lambda x: x.area, reverse=True)
+    return regions
 
-    if log:
+
+def preserve_biggest_chunks(
+    vol: np.ndarray,
+    chunk_num: int = 1,
+    fill_hole: bool = False,
+    log: Callable = None,
+    spacing: List[int] = (1.0, 1.0, 1.0),
+    dilation_structure: np.ndarray = kernel_shuttle,
+) -> np.ndarray:
+    """
+    Preserve biggest linked chunks.
+
+    Args:
+        vol (np.ndarray): Binary map for input data.
+        chunk_num (int, optional): Number of preserved chunks. Defaults to 1.
+        fill_hole (bool, optional): Fill holes in output. Defaults to False.
+        log (Callable, optional): Logger, will be call as `log("foo")`. Defaults to None.
+        spacing (List[int], optional): Spacing for volume voxel. Defaults to (1.0, 1.0, 1.0).
+        dilation_structure (np.ndarray, optional): Dilation algorithms matching structure. Defaults to kernel_shuttle.
+
+    Returns:
+        np.ndarray: Merged and deleted map will be return.
+    """
+    # combine liver and tumor?
+    regions = label_regions(vol, dilation_structure=dilation_structure, iteration=1)
+
+    if log and Callable(log):  # Only calculate information if logger is present
         for idx, region in enumerate(regions):
             log(f"[{idx+1:=^36}]")
             log(f"{'Volume:':12} {spacing_to_cc(spacing) * region.area:<10.5f} cm3")
@@ -128,6 +152,7 @@ def preserve_biggest_chunks(
 
 def evaluate_pred_quality(
     path: str = None,
+    id_name: Any = None,
     vol: np.ndarray = None,
     hdr=None,
     chunks: int = 2,  # num of preserved label
@@ -141,8 +166,9 @@ def evaluate_pred_quality(
 
     Args:
         path (str, optional): path to prediction file. If not provide, vol and hdr must be provide manually. Defaults to None.
+        id_name (Any, optional): Specified the id used for chunk. If not provide, automately retrieve from path if possible.
         vol (np.ndarray, optional): volume of prediction. Defaults to None.
-        hdr ([type], optional): Medpy Header, or an object which return `obj.spacing` in tuple[float, float, float]. Defaults to None. 
+        hdr ([type], optional): Medpy Header, or an object which return `obj.spacing` in tuple[float, float, float]. Or spacing. Defaults to None. 
         chunks (int, optional): Max number of biggest chunk to calculate. Defaults to 2.
         dilation_structure (array_like, optional): Structure used for dilation process. Defaults to None.
         note (str, optional): Note add to each chunk. Defaults to None.
@@ -174,35 +200,38 @@ def evaluate_pred_quality(
     if merge_tumor:
         vol[vol == 2] = 1  # merge tumor
 
-    l_vol = ndimage.binary_dilation(
-        vol, structure=dilation_structure, iterations=1  # Not sure
-    ).astype(int)
-    l_vol = measure.label(l_vol)
-    l_vol *= vol  # restore?
-
-    regions = measure.regionprops(l_vol)
-    regions.sort(key=lambda x: x.area, reverse=True)
+    regions = label_regions(vol, dilation_structure=dilation_structure, iteration=1)
 
     def test_func(x, a, b):  # linear regression
         return a + b * x
 
     data = []
-    for i in range(2):
-        if i >= len(regions):
-            continue
-        r = regions[i]
+    for i, r in enumerate(regions[:chunks]):
         chunk = {}
-        chunk["id"] = f"{os.path.basename(path).split('.')[0]}_{i}"
+        chunk["id"] = (
+            f"{id_name}_{i}"
+            if id_name
+            else (
+                f"{os.path.basename(path).split('.')[0]}_{i}" if path else f"pred_{i}"
+            )
+        )
         chunk["slices"] = len(r.image)
         spacing = getattr(
             hdr, 'spacing', None
         )  # ignore spacing if None of the hdr is provide
         if spacing == None:
-            log(
-                "Cannot find spacing information from Volume Header.",
-                "Using Unit Voxel",
-            )
-            spacing = (1.0, 1.0, 1.0)
+            if (
+                (isinstance(hdr, tuple) or isinstance(hdr, list))
+                and len(hdr) == 3
+                and all(isinstance(v, float) for v in hdr)
+            ):
+                spacing = hdr
+            else:
+                log(
+                    "Cannot find spacing information from Volume Header.",
+                    "Using Unit Voxel",
+                )
+                spacing = (1.0, 1.0, 1.0)
         chunk["spacing"] = spacing
         chunk["volume"] = r.area * spacing_to_cc(spacing)
         if calc_holes:
